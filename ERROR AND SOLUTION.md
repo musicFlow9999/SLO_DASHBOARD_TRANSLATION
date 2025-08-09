@@ -43,7 +43,7 @@ This parameter of the operator `/` should be a number or a duration, but was an 
 
 ## Solution
 
-Summarize scalar values instead of arrays:
+Flatten the timeseries arrays before summarizing:
 
 ```dql
 timeseries { total = sum(dt.service.request.count) },
@@ -57,9 +57,11 @@ timeseries { total = sum(dt.service.request.count) },
   kind:leftOuter,
   on:{ dt.entity.service, timeframe, interval },
   prefix:"err."
+| fieldsAdd total = arraySum(total),
+             err_failed = arraySum(err.failed)
 | summarize {
     total_period  = sum(total),
-    failed_period = sum(err.failed)
+    failed_period = sum(err_failed)
   }, by:{ dt.entity.service }
 | fieldsAdd service = entityName(dt.entity.service)
 | fieldsAdd availability_pct = (total_period - failed_period) / total_period * 100
@@ -72,5 +74,5 @@ timeseries { total = sum(dt.service.request.count) },
 | sort availability_pct asc
 ```
 
-This rewrite removes the `[]` array operators so `total_period` and `failed_period` are numeric scalars, allowing arithmetic operators to work without type errors.
+By collapsing the `timeseries` results with `arraySum`, the subsequent `sum()` operations work on numbers instead of arrays, eliminating the type-mismatch error.
 
