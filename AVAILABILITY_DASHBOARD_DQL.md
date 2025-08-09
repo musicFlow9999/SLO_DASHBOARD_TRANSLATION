@@ -38,11 +38,11 @@ Each module respects the **dashboard timeframe** (no `from:/to:` clauses) except
 // Availability % = (total - failed) / total * 100
 timeseries { total = sum(dt.service.request.count) },
   by:{ dt.entity.service },
-  filter:{ in(dt.entity.service, array($Services)) }
+  filter:{ in(dt.entity.service, array($services)) }
 | join [
     timeseries { failed = sum(dt.service.request.count, default: 0.0) },
       by:{ dt.entity.service },
-      filter:{ failed == true and in(dt.entity.service, array($Services)) }
+      filter:{ failed == true and in(dt.entity.service, array(services)) }
   ],
   kind:leftOuter,
   on:{ dt.entity.service, timeframe, interval },
@@ -60,7 +60,7 @@ timeseries { total = sum(dt.service.request.count) },
 | join [
     timeseries { failed = sum(dt.service.request.count, default: 0.0) },
       by:{ dt.entity.service },
-      filter:{ failed == true and in(dt.entity.service, array($Services)) }
+      filter:{ failed == true and in(dt.entity.service, array($services)) }
   ],
   kind:leftOuter,
   on:{ dt.entity.service, timeframe, interval },

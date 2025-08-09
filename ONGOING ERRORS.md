@@ -5,7 +5,7 @@ Summarize scalar values instead of arrays:
 ```dql
 timeseries { total = sum(dt.service.request.count) },
   by:{ dt.entity.service },
-  filter:{ in(dt.entity.service, array($Services)) }
+  filter:{ in(dt.entity.service, array($services)) }
 | join [
     timeseries { failed = sum(dt.service.request.count, default: 0.0) },
       by:{ dt.entity.service },
@@ -14,9 +14,10 @@ timeseries { total = sum(dt.service.request.count) },
   kind:leftOuter,
   on:{ dt.entity.service, timeframe, interval },
   prefix:"err."
+| fieldsAdd err_failed = arraySum(err.failed) //if multiple entries exist
 | summarize {
     total_period  = sum(total),
-    failed_period = sum(err.failed)
+    failed_period = sum(err_failed)
   }, by:{ dt.entity.service }
 | fieldsAdd service = entityName(dt.entity.service)
 | fieldsAdd availability_pct = (total_period - failed_period) / total_period * 100
