@@ -76,6 +76,7 @@ timeseries { total = sum(dt.service.request.count) },
 
 By collapsing the `timeseries` results with `arraySum`, the subsequent `sum()` operations work on numbers instead of arrays, eliminating the type-mismatch error.
 
+
 ## Error: sum() parameter was an array
 
 ### Query
@@ -130,4 +131,6 @@ timeseries { total = sum(dt.service.request.count) },
 ```
 
 Converting `total` and `err_failed` with `arraySum` ensures `sum()` receives numbers instead of arrays.
+
+
 
