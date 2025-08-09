@@ -74,9 +74,8 @@ timeseries { total = sum(dt.service.request.count) },
 | fieldsAdd target_pct  = toDouble($TargetPct)
 | fieldsAdd warning_pct = toDouble($WarningPct)
 | fieldsAdd eb_used_pct      = ((100 - availability_pct) / (100 - target_pct)) * 100
-| fieldsAdd eb_remaining_pct = if(eb_used_pct < 0, 100, if(eb_used_pct > 100, 0, 100 - eb_used_pct))
-| fieldsAdd state = if(availability_pct < target_pct, "Fail",
-                  if(availability_pct < warning_pct, "Warn", "OK"))
+| fieldsAdd eb_remaining_pct = if(eb_used_pct < 0, 100, else: if(eb_used_pct > 100, 0, else: 100 - eb_used_pct))
+| fieldsAdd state = if(availability_pct < target_pct, "Fail", else: if(availability_pct < warning_pct, "Warn", else: "OK"))
 | fields service, target_pct, warning_pct, availability_pct, eb_remaining_pct, state
 | sort availability_pct asc
 ```
