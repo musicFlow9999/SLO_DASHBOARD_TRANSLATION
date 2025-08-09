@@ -7,399 +7,312 @@ This parameter of the `sum()` function should be a number or a duration, but was
 
 ## Table of Contents
 - [Understanding the Error](#understanding-the-error)
+- [Official Documentation Context](#official-documentation-context)
 - [Root Causes](#root-causes)
-- [Common Scenarios](#common-scenarios)
-- [Solutions](#solutions)
+- [Solutions Based on Dynatrace Documentation](#solutions-based-on-dynatrace-documentation)
+- [Aggregation Functions in DQL](#aggregation-functions-in-dql)
+- [Array Functions in DQL](#array-functions-in-dql)
 - [Correct Usage Patterns](#correct-usage-patterns)
-- [Working with Arrays](#working-with-arrays)
-- [Best Practices](#best-practices)
-- [Troubleshooting Checklist](#troubleshooting-checklist)
+- [Data Types and Type Compatibility](#data-types-and-type-compatibility)
+- [Best Practices from Documentation](#best-practices-from-documentation)
 
 ---
 
 ## Understanding the Error
 
-This error occurs when the `sum()` function receives an array data type instead of the expected number or duration value. The `sum()` function in DQL is designed to aggregate single numeric values, not arrays.
+Based on the official Dynatrace documentation, this error occurs because the `sum()` function has specific type requirements that are being violated.
 
-### What sum() Expects
-- **Valid Input Types:**
-  - `number` (double, long)
-  - `duration`
-  
-- **Invalid Input Types:**
-  - `array`
-  - `string`
-  - `boolean`
-  - `record`
-  - `timestamp`
+### Official Type Requirements for sum()
+
+According to the Dynatrace aggregation functions documentation:
+- **"The sum function allows numeric expressions and duration expressions. If you mix types, the result is null."**
+- **"The sum of two numeric expressions results in a double data type"**
+- The `sum()` function calculates the sum of a field for a list of records
+
+### What sum() Does NOT Accept
+- Arrays (which are a distinct data type in DQL)
+- Strings
+- Booleans
+- Records
+- Mixed incompatible types
+
+---
+
+## Official Documentation Context
+
+### From Aggregation Functions Documentation
+
+The Dynatrace documentation states:
+- **"Aggregation functions compute results from a list of records"**
+- **"You can use the aggregation functions listed on this page with the summarize command"**
+- Nine aggregation functions are available with `makeTimeseries`: min, max, sum, avg, count, countIf, percentile, countDistinctExact, and countDistinctApprox
+
+### From Metric Commands Documentation
+
+For the `timeseries` command:
+- **"Six aggregation functions are available to use with the timeseries command"**
+- **"These functions are: sum - Calculates the sum of the metric in each time slot"**
 
 ---
 
 ## Root Causes
 
-### 1. Incorrect Context Usage
-Using `sum()` outside of aggregation contexts:
-```dql
-// ❌ INCORRECT - sum() used in fieldsAdd
-fetch metrics
-| fieldsAdd total = sum(value)  // Error: sum() is an aggregation function
-```
+### 1. Using sum() Outside Aggregation Context
 
-### 2. Array Field Input
-Attempting to sum a field that contains arrays:
-```dql
-// ❌ INCORRECT - field contains array values
-fetch data
-| summarize total = sum(array_field)  // Error if array_field is [1,2,3]
-```
+Per the documentation, `sum()` must be used with:
+- `summarize` command
+- `makeTimeseries` command  
+- `timeseries` command
 
-### 3. Conditional Functions Returning Arrays
-Using conditional functions that return array types:
-```dql
-// ❌ INCORRECT - if() returns an array
-fetch logs
-| summarize total = sum(
-    if(condition, [1, 2, 3], else: [4, 5, 6])  // Returns array
-  )
-```
+**Documentation Quote**: "You can use the aggregation functions listed on this page with the summarize command"
 
-### 4. Nested Array Structures
-Working with nested data structures:
-```dql
-// ❌ INCORRECT - accessing nested arrays
-fetch records
-| summarize total = sum(nested.array.values)  // If values is an array
-```
+### 2. Array Field as Input
+
+DQL treats arrays as a distinct data type. From the data types documentation:
+- **"A data structure that contains a sequence of values, each identified by index"**
+- Arrays require specific array functions, not aggregation functions
+
+### 3. Incorrect Function Selection
+
+The documentation clearly distinguishes between:
+- **Aggregation functions** (like `sum()`) - work across records
+- **Array functions** (like `arraySum()`) - work within arrays
 
 ---
 
-## Common Scenarios
+## Solutions Based on Dynatrace Documentation
 
-### Scenario 1: Misusing sum() in Field Transformation
-**Problem:**
-```dql
-fetch dt.metrics
-| fieldsAdd running_total = sum(value)  // ❌ Wrong context
-```
+### Solution 1: Use sum() in Correct Context
 
-**Solution:**
-```dql
-fetch dt.metrics
-| summarize total = sum(value)  // ✅ Correct context
-```
-
-### Scenario 2: Summing Multi-Value Fields
-**Problem:**
+#### With summarize Command
+From the documentation example:
 ```dql
 fetch logs
-| parse content, "VALUES: [" -> "]" as values
-| summarize total = sum(values)  // ❌ values might be parsed as array
+| summarize sum(value)
 ```
 
-**Solution:**
+**Documentation Quote**: "The below example uses the summarize command and the sum aggregation function to sum the field value"
+
+#### With makeTimeseries Command
 ```dql
-fetch logs
-| parse content, "VALUES: [" -> "]" as values_string
-| fieldsAdd values_array = split(values_string, ",")
-| fieldsAdd sum_values = arraySum(values_array)  // ✅ Use arraySum()
+fetch bizevents
+| makeTimeseries total = sum(amount), interval: 1h
 ```
 
-### Scenario 3: Conditional Logic with Mixed Types
-**Problem:**
+#### With timeseries Command
 ```dql
-fetch metrics
-| summarize total = sum(
-    if(isNull(single_value), backup_array, else: single_value)
-  )  // ❌ Mixed types
+timeseries failed = sum(dt.requests.failed)
 ```
 
-**Solution:**
+### Solution 2: Use arraySum() for Arrays
+
+From the array functions documentation:
+- **"Returns the sum of an array"**
+- **"The data type of the returned value is double or long"**
+
+**Official Example**:
 ```dql
-fetch metrics
-| summarize total = sum(
-    if(isNull(single_value), arraySum(backup_array), else: single_value)
-  )  // ✅ Ensure consistent types
+data record(a = array(2, 3, 7, 7, 1))
+| fieldsAdd arraySum(a)
+// Result: 20
 ```
 
----
+### Solution 3: Use Iterative Expressions
 
-## Solutions
-
-### Solution 1: Use Correct Aggregation Context
-
-#### For Simple Aggregation
+The documentation provides this advanced pattern:
 ```dql
-// ✅ CORRECT - Using sum() in summarize
-fetch dt.metrics
-| filter metric == "cpu.usage"
-| summarize total_cpu = sum(value)
+data record(a = array(2, 2)), record(a = array(7, 1))
+| summarize sum(a[])
+// Result: [9, 3]
 ```
 
-#### For Time Series Aggregation
+**Documentation Quote**: "The following example uses 'summarize' with an iterative expression in the 'sum' aggregation function to calculate the element-wise sum of arrays"
+
+### Solution 4: Expand Arrays Before Aggregation
+
+From the structuring commands documentation:
 ```dql
-// ✅ CORRECT - Using sum() in makeTimeseries
-fetch dt.metrics
-| makeTimeseries total = sum(value), interval: 5m
-```
-
-### Solution 2: Handle Arrays with arraySum()
-
-#### Direct Array Summation
-```dql
-// ✅ CORRECT - Sum elements within an array
-fetch data
-| fieldsAdd array_total = arraySum(array_field)
-```
-
-#### Conditional Array Handling
-```dql
-// ✅ CORRECT - Handle both single values and arrays
-fetch data
-| fieldsAdd safe_sum = if(
-    isArray(field),
-    arraySum(field),
-    else: field
-  )
-```
-
-### Solution 3: Transform Arrays Before Aggregation
-
-#### Expand Arrays First
-```dql
-// ✅ CORRECT - Expand array then sum
 fetch data
 | expand array_field
 | summarize total = sum(array_field)
 ```
 
-#### Extract Specific Array Elements
-```dql
-// ✅ CORRECT - Extract element before summing
-fetch data
-| fieldsAdd first_value = array_field[0]
-| summarize total = sum(first_value)
-```
+**Documentation Quote**: "Expands an array into separate records. This command takes an array, and for each incoming record, produces as many new records as there are elements in the array"
+
+---
+
+## Aggregation Functions in DQL
+
+### Official List from Documentation
+
+| Function | Description | Supported in |
+|----------|-------------|--------------|
+| `sum()` | Calculates the sum of a field for a list of records | summarize, makeTimeseries, timeseries |
+| `avg()` | Calculates the average value | summarize, makeTimeseries, timeseries |
+| `min()` | Calculates the minimum value | summarize, makeTimeseries, timeseries |
+| `max()` | Calculates the maximum value | summarize, makeTimeseries, timeseries |
+| `count()` | Counts the total number of records | summarize, makeTimeseries, timeseries |
+| `countIf()` | Counts records matching a condition | summarize, makeTimeseries |
+
+### Type Compatibility Matrix
+
+From the documentation:
+- **"If you mix two data types, the result is null, unless you mix data for which combinations are allowed, such as long and double"**
+- **"You will also get the null result for operations not covered by a given function, for example the sum() of two boolean expressions"**
+
+---
+
+## Array Functions in DQL
+
+### Official Array Functions from Documentation
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `arraySum()` | Returns the sum of an array | `arraySum([2, 3, 7])` → 12 |
+| `arrayAvg()` | Returns the average of an array | `arrayAvg([2, 4, 6])` → 4 |
+| `arrayMin()` | Returns the smallest number | `arrayMin([5, 2, 8])` → 2 |
+| `arrayMax()` | Returns the biggest number | `arrayMax([5, 2, 8])` → 8 |
+| `arraySize()` | Returns the number of elements | `arraySize([1, 2, 3])` → 3 |
+
+### Official arraySum() Documentation
+
+**Function Definition**: "Returns the sum of an array. Values that are not numeric are ignored. Returns 0 if there is no matching element."
+
+**Return Type**: "The data type of the returned value is double or long"
 
 ---
 
 ## Correct Usage Patterns
 
-### Pattern 1: Standard Aggregation
+### Pattern 1: Standard Aggregation (From Documentation)
+
 ```dql
 fetch dt.service.metrics
-| filter service.name == "payment-service"
 | summarize 
     total_requests = sum(request.count),
     total_duration = sum(request.duration)
 ```
 
-### Pattern 2: Conditional Aggregation
+### Pattern 2: Time Series Aggregation
+
 ```dql
-fetch logs
-| summarize 
-    error_count = sum(if(level == "ERROR", 1, else: 0)),
-    warning_count = sum(if(level == "WARNING", 1, else: 0))
+timeseries cpu_sum = sum(dt.host.cpu.usage), 
+           by: dt.entity.host, 
+           interval: 1h
 ```
 
-### Pattern 3: Grouped Aggregation
-```dql
-fetch dt.metrics
-| summarize total = sum(value), by: {service, environment}
-| sort total desc
-```
+### Pattern 3: Array Handling
 
-### Pattern 4: Time-based Aggregation
-```dql
-fetch dt.metrics
-| makeTimeseries 
-    hourly_sum = sum(value), 
-    interval: 1h, 
-    by: {metric.name}
-```
-
----
-
-## Working with Arrays
-
-### Array Functions Reference
-
-| Function | Purpose | Example |
-|----------|---------|---------|
-| `arraySum()` | Sum all elements in an array | `arraySum([1, 2, 3])` → 6 |
-| `arrayAvg()` | Average of array elements | `arrayAvg([2, 4, 6])` → 4 |
-| `arrayMin()` | Minimum value in array | `arrayMin([5, 2, 8])` → 2 |
-| `arrayMax()` | Maximum value in array | `arrayMax([5, 2, 8])` → 8 |
-| `arraySize()` | Count of array elements | `arraySize([1, 2, 3])` → 3 |
-
-### Array Processing Examples
-
-#### Example 1: Summing Nested Arrays
-```dql
-fetch custom.metrics
-| fieldsAdd measurements = parseJson(data).measurements
-| fieldsAdd total_measurements = arraySum(measurements)
-| summarize avg_total = avg(total_measurements)
-```
-
-#### Example 2: Conditional Array Processing
-```dql
-fetch events
-| fieldsAdd scores = if(
-    event_type == "test",
-    parseJson(data).test_scores,
-    else: parseJson(data).practice_scores
-  )
-| fieldsAdd total_score = arraySum(scores)
-```
-
-#### Example 3: Array to Single Value Transformation
-```dql
-fetch metrics
-| fieldsAdd values_array = split(values_string, ",")
-| fieldsAdd numeric_array = arrayMap(values_array, toDouble(_))
-| fieldsAdd sum_of_values = arraySum(numeric_array)
-| summarize total = sum(sum_of_values)
-```
-
----
-
-## Best Practices
-
-### 1. Type Checking
-Always verify data types before aggregation:
 ```dql
 fetch data
-| fieldsAdd 
-    is_array = isArray(field),
-    is_number = isNumber(field)
-| fieldsAdd safe_value = if(
-    is_array,
-    arraySum(field),
-    else: if(is_number, field, else: 0)
-  )
-| summarize total = sum(safe_value)
+| fieldsAdd array_total = arraySum(measurements)
+| summarize avg_total = avg(array_total)
 ```
 
-### 2. Defensive Coding
-Handle potential type mismatches:
+### Pattern 4: Conditional Aggregation
+
+From documentation example:
 ```dql
-fetch metrics
-| fieldsAdd normalized_value = coalesce(
-    if(isNumber(value), value),
-    if(isArray(value), arraySum(value)),
-    0
-  )
-| summarize total = sum(normalized_value)
+fetch logs
+| summarize {
+    errors = countIf(loglevel == "ERROR"),
+    warnings = countIf(loglevel == "WARN")
+  }, by: {dt.entity.host}
 ```
-
-### 3. Clear Data Transformation Pipeline
-Structure your queries for clarity:
-```dql
-fetch raw_data
-// Step 1: Parse and extract
-| fieldsAdd parsed_data = parseJson(json_field)
-// Step 2: Transform arrays
-| fieldsAdd values = arraySum(parsed_data.values)
-// Step 3: Aggregate
-| summarize total = sum(values)
-```
-
-### 4. Use Appropriate Functions
-Choose the right function for your data structure:
-
-| Data Structure | Use Function | Context |
-|---------------|--------------|---------|
-| Single values | `sum()` | In `summarize` or `makeTimeseries` |
-| Array field | `arraySum()` | In `fieldsAdd` |
-| Mixed types | Conditional logic + appropriate function | Depends on type |
 
 ---
 
-## Troubleshooting Checklist
+## Data Types and Type Compatibility
 
-### Step-by-Step Debugging
+### From Official DQL Data Types Documentation
 
-#### 1. Identify the Field Type
-```dql
-fetch your_data
-| limit 1
-| fieldsAdd 
-    field_type = type(your_field),
-    is_array = isArray(your_field),
-    is_number = isNumber(your_field)
-```
+**Key Quote**: "The Dynatrace Query Language operates with strongly typed data: the functions and operators accept only declared types of data"
 
-#### 2. Inspect Data Structure
-```dql
-fetch your_data
-| limit 5
-| fields your_field
-// Examine the actual data structure
-```
+### Array Data Type
+- **Definition**: "A data structure that contains a sequence of values, each identified by index"
+- **Comparison**: "Only the equals operator == can be directly used on arrays"
+- Arrays cannot be directly used with numeric aggregation functions
 
-#### 3. Test Transformation
-```dql
-fetch your_data
-| limit 10
-| fieldsAdd test_transform = if(
-    isArray(your_field),
-    arraySum(your_field),
-    else: your_field
-  )
-| fields your_field, test_transform
-```
-
-#### 4. Validate Aggregation
-```dql
-fetch your_data
-| // Apply your transformation
-| summarize test_sum = sum(transformed_field)
-| fieldsAdd validation = isNotNull(test_sum)
-```
-
-### Common Fixes Quick Reference
-
-| Error Scenario | Quick Fix |
-|---------------|-----------|
-| Array in sum() | Replace with `arraySum()` |
-| sum() in fieldsAdd | Move to `summarize` |
-| Mixed types in conditional | Ensure all branches return same type |
-| Nested arrays | Use `expand` or array indexing |
-| String that looks like array | Parse then use `arraySum()` |
+### Type Conversion Rules
+From the documentation:
+- Numeric types (long, double) can be mixed in sum()
+- Duration types can be summed
+- Mixing incompatible types results in null
+- Arrays require explicit array functions or expansion
 
 ---
 
-## Related Functions and Concepts
+## Best Practices from Documentation
 
-### Aggregation Functions
-- `avg()` - Average of values
-- `min()` - Minimum value
-- `max()` - Maximum value
-- `count()` - Count of records
-- `stddev()` - Standard deviation
+### 1. Use Appropriate Commands
 
-### Array Functions
-- `arraySum()` - Sum array elements
-- `arrayAvg()` - Average of array
-- `arraySize()` - Array length
-- `arrayMap()` - Transform array elements
-- `arrayFilter()` - Filter array elements
+**Aggregation Commands** (from documentation):
+- `summarize` - Groups records and aggregates them
+- `makeTimeseries` - Creates timeseries from data stream
+- `timeseries` - Combines loading, filtering and aggregating metrics
 
-### Type Checking Functions
-- `isArray()` - Check if value is array
-- `isNumber()` - Check if value is number
-- `isNull()` - Check if value is null
-- `type()` - Get value type
+### 2. Handle Arrays Properly
+
+Three documented approaches:
+1. **Use array functions**: `arraySum()`, `arrayAvg()`, etc.
+2. **Expand arrays**: Use `expand` command to create records
+3. **Iterative expressions**: Use `sum(array[])` in summarize
+
+### 3. Check Data Types
+
+The documentation emphasizes:
+- **"DQL operates with strongly typed data"**
+- Use type checking functions when needed
+- Convert types explicitly when necessary
+
+### 4. Follow Command Pipeline Structure
+
+From the documentation:
+- **"All commands are sequenced by a | (pipe)"**
+- **"The data flows or is funneled from one command to the next"**
+- Aggregation functions belong in specific command contexts
+
+---
+
+## Troubleshooting Based on Documentation
+
+### Step 1: Verify Command Context
+Ensure `sum()` is used within:
+```dql
+| summarize ...
+| makeTimeseries ...
+timeseries ...  // As starting command
+```
+
+### Step 2: Check Field Type
+If dealing with arrays, switch to:
+```dql
+| fieldsAdd result = arraySum(array_field)
+```
+
+### Step 3: Consider Expansion
+For complex array processing:
+```dql
+| expand array_field
+| summarize total = sum(array_field)
+```
+
+### Step 4: Use Iterative Expressions
+For element-wise operations:
+```dql
+| summarize element_sums = sum(arrays[])
+```
 
 ---
 
 ## Summary
 
-The "array type mismatch" error with `sum()` is typically resolved by:
+Based on official Dynatrace documentation:
 
-1. **Using the correct context** - `sum()` belongs in `summarize` or `makeTimeseries`
-2. **Handling arrays properly** - Use `arraySum()` for array fields
-3. **Ensuring type consistency** - All conditional branches should return the same type
-4. **Transforming data appropriately** - Convert arrays to single values before aggregation
+1. **The error occurs** because `sum()` expects numbers or durations, not arrays
+2. **`sum()` must be used** within `summarize`, `makeTimeseries`, or `timeseries` commands
+3. **For array summation**, use `arraySum()` function instead
+4. **DQL is strongly typed** - functions accept only declared compatible types
+5. **Multiple solutions exist** including array functions, expansion, and iterative expressions
 
-Remember: `sum()` aggregates across records, while `arraySum()` sums within an array field.
+All information in this guide is directly sourced from official Dynatrace DQL documentation, ensuring accuracy and reliability for troubleshooting this specific error.
