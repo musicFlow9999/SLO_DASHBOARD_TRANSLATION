@@ -134,3 +134,27 @@ Converting `total` and `err_failed` with `arraySum` ensures `sum()` receives num
 
 
 
+## Error: Too many positional parameters in `if`
+
+### Query
+
+```dql
+| fieldsAdd error_rate = if(total_w == 0, 0.0, failed_w / total_w)
+```
+
+### Error output
+
+```
+Too many positional parameters have been defined. Optional parameters need to be named. Potential parameters are: else
+```
+
+## Solution
+
+Use a named `else` parameter when including an else branch:
+
+```dql
+| fieldsAdd error_rate = if(total_w == 0, 0.0, else: failed_w / total_w)
+```
+
+Naming the `else` parameter follows the conditional function syntax and avoids the positional parameter error.
+
