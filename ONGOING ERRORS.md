@@ -28,7 +28,8 @@ timeseries { total = sum(dt.service.request.count) },
 | fields service, target_pct, warning_pct, availability_pct, eb_remaining_pct, state
 | sort availability_pct asc
 ```
-```
 ## ERROR
+```
 This parameter of the `sum()` function should be a number or a duration, but was an array
+```
 
