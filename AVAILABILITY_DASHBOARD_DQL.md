@@ -35,21 +35,21 @@ Each module respects the **dashboard timeframe** (no `from:/to:` clauses) except
 
 ### 1. `mod_availability_timeseries` — service availability trend
 ```dql
-// Availability % = (total - failed) / total * 100
 timeseries { total = sum(dt.service.request.count) },
-  by:{ dt.entity.service },
-  filter:{ in(dt.entity.service, array($services)) }
+  by: { dt.entity.service },
+  filter: { in(dt.entity.service, array($services)) }
 | join [
     timeseries { failed = sum(dt.service.request.count, default: 0.0) },
-      by:{ dt.entity.service },
-      filter:{ failed == true and in(dt.entity.service, array(services)) }
+      by: { dt.entity.service },
+      filter: { failed == true and in(dt.entity.service, array($services)) },
+      nonempty: true
   ],
-  kind:leftOuter,
-  on:{ dt.entity.service, timeframe, interval },
-  prefix:"err."
-| fieldsAdd availability_pct = (total[] - err.failed[]) / total[] * 100
+  kind: leftOuter,
+  on: { dt.entity.service, timeframe, interval },
+  prefix: "err."
+| fieldsAdd availability_pct = (total[] - coalesce(err.failed[], 0.0)) / total[] * 100
 | fieldsAdd service = entityName(dt.entity.service)
-| fields service, availability_pct, timeframe, interval
+| fieldsKeep dt.entity.service, service, availability_pct, total, err.failed, timeframe, interval
 ```
 
 ### 2. `mod_status_table` — aggregate status with error budget and state
