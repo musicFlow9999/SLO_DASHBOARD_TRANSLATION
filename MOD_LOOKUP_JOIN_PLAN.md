@@ -53,11 +53,48 @@ ALLOW storage:files:delete WHERE storage:file-path startsWith "/lookups/";
 ### Setting Up OAuth Client for API Access
 
 1. **Create OAuth Client** (Account Management > Identity & access management > OAuth clients)
+   - Navigate to: **Identity & access management > OAuth clients**
+   - Select **Create client**
+   - Provide service user email and meaningful description
+   - Select required permissions (scopes below)
+
 2. **Required Scopes**: 
-   - `storage:files:read`
-   - `storage:files:write` 
-   - `storage:files:delete`
-3. **Save credentials securely** - client secret is only shown once
+   - `storage:files:read` - Read lookup data in DQL queries
+   - `storage:files:write` - Create or modify lookup files  
+   - `storage:files:delete` - Remove lookup files
+
+3. **Save Credentials Securely**
+   - **Critical**: Client secret is only shown once during creation
+   - Copy and store Client ID and Client Secret in a secure password manager
+   - Use separate clients for different applications/integrations
+
+4. **Obtain Bearer Token for API Calls**:
+   ```bash
+   # Request OAuth token from Dynatrace SSO
+   curl --request POST \
+     --url 'https://sso.dynatrace.com/sso/oauth2/token' \
+     --header 'Content-Type: application/x-www-form-urlencoded' \
+     --data-urlencode 'grant_type=client_credentials' \
+     --data-urlencode 'client_id=YOUR_CLIENT_ID' \
+     --data-urlencode 'client_secret=YOUR_CLIENT_SECRET_HERE' \
+     --data-urlencode 'scope=storage:files:read storage:files:write storage:files:delete' \
+     --data-urlencode 'resource=urn:dtaccount:YOUR_ACCOUNT_UUID'
+   ```
+   
+   Response contains the bearer token:
+   ```json
+   {
+     "access_token": "your_bearer_token_value_here",
+     "token_type": "Bearer", 
+     "expires_in": 3600,
+     "scope": "storage:files:read storage:files:write storage:files:delete"
+   }
+   ```
+
+5. **Service User Setup**:
+   - Designate a specific user as service user for API access only
+   - Ensure service user belongs to groups with appropriate permissions
+   - Follow principle of least privilege for scope assignments
 
 ## 3. Upload Lookup Files - Complete Workflow
 
@@ -557,6 +594,344 @@ timeseries { total = sum(dt.service.request.count) },
 | fields service, team, criticality, target_pct, warning_pct, 
          availability_pct, eb_remaining_pct, state
 | sort criticality desc, availability_pct asc
+```
+
+## 11. Python Automation with OAuth Integration
+
+### Complete Lookup Manager with OAuth Support
+
+```python
+import requests
+import json
+import time
+from typing import Dict, List, Any, Optional
+import logging
+from urllib.parse import urlencode
+
+class DynatraceOAuthLookupManager:
+    """
+    Comprehensive manager for Dynatrace Grail lookup tables with OAuth authentication.
+    Handles token management, automatic refresh, and complete CRUD operations.
+    """
+    
+    def __init__(self, environment_url: str, client_id: str, client_secret: str, account_uuid: str):
+        """
+        Initialize the OAuth-enabled lookup manager.
+        
+        Args:
+            environment_url: Base URL for your Dynatrace environment
+            client_id: OAuth client ID
+            client_secret: OAuth client secret  
+            account_uuid: Dynatrace account UUID for resource URN
+        """
+        self.environment_url = environment_url.rstrip('/')
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.account_uuid = account_uuid
+        self.base_url = f"{self.environment_url}/platform/storage/resource-store/v1/files/tabular"
+        self.sso_url = "https://sso.dynatrace.com/sso/oauth2/token"
+        self.access_token = None
+        self.token_expires_at = 0
+        self.logger = logging.getLogger(__name__)
+
+    def _get_access_token(self) -> str:
+        """
+        Get or refresh OAuth access token.
+        
+        Returns:
+            Valid access token
+        """
+        # Check if current token is still valid (with 60 second buffer)
+        if self.access_token and time.time() < (self.token_expires_at - 60):
+            return self.access_token
+            
+        # Request new token
+        token_data = {
+            'grant_type': 'client_credentials',
+            'client_id': self.client_id,
+            'client_secret': self.client_secret,
+            'scope': 'storage:files:read storage:files:write storage:files:delete',
+            'resource': f'urn:dtaccount:{self.account_uuid}'
+        }
+        
+        headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+        
+        try:
+            response = requests.post(
+                self.sso_url, 
+                headers=headers,
+                data=urlencode(token_data)
+            )
+            response.raise_for_status()
+            
+            token_response = response.json()
+            self.access_token = token_response['access_token']
+            expires_in = token_response.get('expires_in', 3600)
+            self.token_expires_at = time.time() + expires_in
+            
+            self.logger.info("OAuth token refreshed successfully")
+            return self.access_token
+            
+        except requests.RequestException as e:
+            self.logger.error(f"Failed to obtain OAuth token: {e}")
+            raise
+
+    def _get_headers(self) -> Dict[str, str]:
+        """Get headers with fresh OAuth token."""
+        token = self._get_access_token()
+        return {'Authorization': f'Bearer {token}'}
+
+    def test_lookup_pattern(self, file_path: str, parse_pattern: str, 
+                          lookup_field: str, content: str) -> Dict[str, Any]:
+        """
+        Test the parsing pattern before uploading data.
+        
+        Args:
+            file_path: Path for the lookup file (e.g., '/lookups/slo_config')
+            parse_pattern: Pattern defining data structure
+            lookup_field: Field used for lookups
+            content: JSON Lines or CSV content to test
+            
+        Returns:
+            API response with parsing results
+        """
+        url = f"{self.base_url}/lookup:test-pattern"
+        
+        files = {
+            'request': (None, json.dumps({
+                'parsePattern': parse_pattern,
+                'lookupField': lookup_field
+            }), 'application/json'),
+            'content': ('test_data', content, 'text/plain')
+        }
+        
+        try:
+            response = requests.post(url, headers=self._get_headers(), files=files)
+            response.raise_for_status()
+            self.logger.info(f"Pattern test successful for {file_path}")
+            return response.json()
+        except requests.RequestException as e:
+            self.logger.error(f"Pattern test failed: {e}")
+            raise
+
+    def upload_lookup_data(self, file_path: str, parse_pattern: str, 
+                          lookup_field: str, content: str, 
+                          display_name: str = None, description: str = None) -> Dict[str, Any]:
+        """
+        Upload lookup data to Dynatrace Grail.
+        
+        Args:
+            file_path: Path for the lookup file (e.g., '/lookups/slo_config')
+            parse_pattern: Pattern defining data structure
+            lookup_field: Field used for lookups
+            content: JSON Lines or CSV content to upload
+            display_name: Optional display name for the lookup table
+            description: Optional description for the lookup table
+            
+        Returns:
+            API response from upload operation
+        """
+        url = f"{self.base_url}/lookup:upload"
+        
+        request_data = {
+            'parsePattern': parse_pattern,
+            'lookupField': lookup_field,
+            'filePath': file_path
+        }
+        
+        if display_name:
+            request_data['displayName'] = display_name
+        if description:
+            request_data['description'] = description
+        
+        files = {
+            'request': (None, json.dumps(request_data), 'application/json'),
+            'content': ('lookup_data', content, 'text/plain')
+        }
+        
+        try:
+            response = requests.post(url, headers=self._get_headers(), files=files)
+            response.raise_for_status()
+            self.logger.info(f"Successfully uploaded lookup data to {file_path}")
+            return response.json()
+        except requests.RequestException as e:
+            self.logger.error(f"Failed to upload lookup data: {e}")
+            raise
+
+    def delete_lookup_data(self, file_path: str) -> bool:
+        """
+        Delete lookup data from Dynatrace Grail.
+        
+        Args:
+            file_path: Path of the lookup file to delete
+            
+        Returns:
+            True if deletion was successful
+        """
+        url = f"{self.base_url}/lookup:delete"
+        headers = {**self._get_headers(), 'Content-Type': 'application/json'}
+        payload = {'filePath': file_path}
+        
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            self.logger.info(f"Successfully deleted lookup data at {file_path}")
+            return True
+        except requests.RequestException as e:
+            self.logger.error(f"Failed to delete lookup data: {e}")
+            return False
+
+    def list_lookup_files(self, prefix: str = "/lookups") -> List[Dict[str, Any]]:
+        """
+        List available lookup files.
+        
+        Args:
+            prefix: Path prefix to filter files
+            
+        Returns:
+            List of file information dictionaries
+        """
+        url = f"{self.environment_url}/platform/storage/resource-store/v1/files"
+        headers = self._get_headers()
+        params = {'prefix': prefix}
+        
+        try:
+            response = requests.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            return response.json().get('files', [])
+        except requests.RequestException as e:
+            self.logger.error(f"Failed to list lookup files: {e}")
+            return []
+
+# Utility Functions for SLO Configuration Management
+
+def create_slo_config_jsonl(services_config: List[Dict[str, Any]]) -> str:
+    """
+    Create JSON Lines content for SLO configuration lookup table.
+    
+    Args:
+        services_config: List of service configuration dictionaries
+        
+    Returns:
+        JSON Lines string ready for upload
+    """
+    if not services_config:
+        return ""
+    
+    lines = []
+    for config in services_config:
+        # Ensure required fields exist
+        if 'service_id' not in config:
+            raise ValueError("service_id is required for each configuration")
+        lines.append(json.dumps(config))
+    
+    return '\n'.join(lines)
+
+def validate_slo_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Validate and clean SLO configuration.
+    
+    Args:
+        config: Service configuration dictionary
+        
+    Returns:
+        Validated configuration dictionary
+    """
+    required_fields = ['service_id']
+    for field in required_fields:
+        if field not in config:
+            raise ValueError(f"Required field '{field}' missing from configuration")
+    
+    # Set defaults for optional fields
+    validated = {
+        'service_id': config['service_id'],
+        'custom_slo_target': config.get('custom_slo_target', 99.0),
+        'warning_threshold': config.get('warning_threshold', 99.5),
+        'team': config.get('team', 'Unknown'),
+        'criticality': config.get('criticality', 'Medium')
+    }
+    
+    # Validate data types and ranges
+    if not (0 <= validated['custom_slo_target'] <= 100):
+        raise ValueError("custom_slo_target must be between 0 and 100")
+    if not (0 <= validated['warning_threshold'] <= 100):
+        raise ValueError("warning_threshold must be between 0 and 100")
+    
+    return validated
+
+# Example Usage
+def main():
+    """
+    Example usage of the DynatraceOAuthLookupManager.
+    """
+    # Configuration (use environment variables in production)
+    environment_url = "https://your-environment.apps.dynatrace.com"
+    client_id = "your-oauth-client-id"
+    client_secret = "your-oauth-client-secret"
+    account_uuid = "your-account-uuid"
+    
+    # Initialize manager
+    manager = DynatraceOAuthLookupManager(
+        environment_url, client_id, client_secret, account_uuid
+    )
+    
+    # Sample SLO configuration data
+    slo_configs = [
+        {
+            "service_id": "SERVICE-ABC123",
+            "custom_slo_target": 99.9,
+            "warning_threshold": 99.95,
+            "team": "Platform",
+            "criticality": "High"
+        },
+        {
+            "service_id": "SERVICE-DEF456", 
+            "custom_slo_target": 95.0,
+            "warning_threshold": 97.0,
+            "team": "Backend",
+            "criticality": "Medium"
+        }
+    ]
+    
+    try:
+        # Validate configurations
+        validated_configs = [validate_slo_config(config) for config in slo_configs]
+        
+        # Create JSON Lines content
+        jsonl_content = create_slo_config_jsonl(validated_configs)
+        
+        # Upload parameters
+        file_path = "/lookups/slo_config"
+        parse_pattern = "JSON:json"
+        lookup_field = "service_id"
+        
+        # Test the pattern first
+        print("Testing parse pattern...")
+        test_result = manager.test_lookup_pattern(
+            file_path, parse_pattern, lookup_field, jsonl_content
+        )
+        print(f"Test successful: {test_result.get('message', 'Pattern validated')}")
+        
+        # Upload the data
+        print("Uploading lookup data...")
+        upload_result = manager.upload_lookup_data(
+            file_path, parse_pattern, lookup_field, jsonl_content,
+            display_name="SLO Configuration",
+            description="Per-service SLO targets and team metadata"
+        )
+        print(f"Upload successful: {upload_result.get('message', 'Data uploaded')}")
+        
+        # List available files
+        print("Available lookup files:")
+        files = manager.list_lookup_files()
+        for file_info in files:
+            print(f"- {file_info.get('path', 'Unknown path')}")
+            
+    except Exception as e:
+        print(f"Operation failed: {e}")
+
+if __name__ == "__main__":
+    main()
 ```
 
 ## 12. Migration and Deployment Steps
