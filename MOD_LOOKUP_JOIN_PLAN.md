@@ -1,20 +1,24 @@
 # Plan for `mod_lookup_join` Per-Service Lookup
 
-### Step 2: Upload Data
-```bash
-curl -X 'POST' \
-  'https://<environment>.apps.dynatrace.com/platform/storage/resource-store/v1/files/tabular/lookup:upload' \
-  -H 'Authorization: Bearer <platformtoken>' \
-  -H 'Content-Type: multipart/form-data' \
-  -F 'request={\n      "parsePattern":"INT:code LD:service_id "," DOUBLE:custom_slo_target "," DOUBLE:warning_threshold "," LD:team "," LD:criticality",\n      "lookupField":"service_id",\n      "filePath":"/lookups/slo_config",\n      "displayName":"SLO Configuration",\n      "description":"Per-service SLO targets and metadata"\n    }' \
-  -F 'content=@slo_config.csv'
-```utlines how to enrich availability SLO queries with per-service metadata using Dynatrace Grail lookup tables.
+This document outlines how to enrich availability SLO queries with per-service metadata using Dynatrace Grail lookup tables.
 
 ## 1. Prepare Lookup Data
 
-Build a table that defines service-level overrides. Example structure:
+Build a table that defines service-level overrides. JSON Lines format is recommended for its simplicity and type preservation.
 
-### CSV Format
+### Recommended: JSON Lines Format (`slo_config.jsonl`)
+```json
+{"service_id":"SERVICE-ABC123","custom_slo_target":99.9,"warning_threshold":99.95,"team":"Platform","criticality":"High"}
+{"service_id":"SERVICE-DEF456","custom_slo_target":95.0,"warning_threshold":97.0,"team":"Backend","criticality":"Medium"}
+{"service_id":"SERVICE-GHI789","custom_slo_target":99.0,"warning_threshold":99.5,"team":"Frontend","criticality":"High"}
+{"service_id":"SERVICE-JKL012","custom_slo_target":98.0,"warning_threshold":99.0,"team":"Data","criticality":"Low"}
+{"service_id":"SERVICE-MNO345","custom_slo_target":99.5,"warning_threshold":99.7,"team":"Platform","criticality":"Critical"}
+{"service_id":"SERVICE-PQR678","custom_slo_target":97.0,"warning_threshold":98.0,"team":"Backend","criticality":"Low"}
+```
+
+**Important**: Each JSON object must be on a single line (no pretty printing).
+
+### Alternative: CSV Format (`slo_config.csv`)
 ```csv
 service_id,custom_slo_target,warning_threshold,team,criticality
 SERVICE-ABC123,99.9,99.95,Platform,High
@@ -23,91 +27,188 @@ SERVICE-GHI789,99.0,99.5,Frontend,High
 SERVICE-JKL012,98.0,99.0,Data,Low
 ```
 
-### JSON Lines Format
-```json
-{"service_id":"SERVICE-ABC123","custom_slo_target":99.9,"warning_threshold":99.95,"team":"Platform","criticality":"High"}
-{"service_id":"SERVICE-DEF456","custom_slo_target":95.0,"warning_threshold":97.0,"team":"Backend","criticality":"Medium"}
-```
+### File Path Requirements
+- Must begin with `/lookups/` prefix
+- Can only contain: alphanumeric characters (`a-zA-Z0-9`), dash (`-`), underscore (`_`), period (`.`), forward slash (`/`)
+- Must start with `/` and end with alphanumeric character
+- Example: `/lookups/slo_config` or `/lookups/team/slo_config_v2`
 
-Store the file under the `/lookups` prefix; file paths must begin with `/`, contain only alphanumeric characters plus `-`, `_`, `.`, and `/`, and follow structured naming like `/lookups/slo_config`.
+## 2. Configure Access Permissions
 
-## 2. Configure Access
+### Required Permissions
 
-- **Dashboard consumption**: Requires `storage:files:read` permission
-- **Maintenance operations**: Additionally requires `storage:files:write` and `storage:files:delete`
+| Operation | Required Permission | Scope |
+|-----------|-------------------|-------|
+| Dashboard consumption | `storage:files:read` | Read lookup data in DQL queries |
+| Upload/Update files | `storage:files:write` | Create or modify lookup files |
+| Delete files | `storage:files:delete` | Remove lookup files |
 
-Example permission policy:
+### Example Permission Policy
 ```
 ALLOW storage:files:read WHERE storage:file-path startsWith "/lookups/";
 ALLOW storage:files:write WHERE storage:file-path startsWith "/lookups/";
 ALLOW storage:files:delete WHERE storage:file-path startsWith "/lookups/";
 ```
 
-## 3. Upload and Maintain Lookup Files
+### Setting Up OAuth Client for API Access
 
-### Step 1: Test Parsing
+1. **Create OAuth Client** (Account Management > Identity & access management > OAuth clients)
+2. **Required Scopes**: 
+   - `storage:files:read`
+   - `storage:files:write` 
+   - `storage:files:delete`
+3. **Save credentials securely** - client secret is only shown once
+
+## 3. Upload Lookup Files - Complete Workflow
+
+### Step 1: Test Parsing (Validate Without Storing)
+
+#### For JSON Lines:
 ```bash
 curl -X 'POST' \
-  'https://<environment>.apps.dynatrace.com/platform/storage/resource-store/v1/files/tabular/lookup:test-pattern' \
-  -H 'Authorization: Bearer <platformtoken>' \
-  -H 'Content-Type: multipart/form-data' \
-  -F 'request={"parsePattern":"INT:code LD:service_id \",\" DOUBLE:custom_slo_target \",\" DOUBLE:warning_threshold \",\" LD:team \",\" LD:criticality","lookupField":"service_id"}' \
-  -F 'content=@slo_config.csv'
-```
-
-### Step 2: Upload Data
-```bash
-curl -X 'POST' \
-  'https://<environment>.apps.dynatrace.com/platform/storage/resource-store/v1/files/tabular/lookup:upload' \
-  -H 'Authorization: Bearer <platformtoken>' \
+  'https://your-environment.apps.dynatrace.com/platform/storage/resource-store/v1/files/tabular/lookup:test-pattern' \
+  -H 'Authorization: Bearer YOUR_PLATFORM_TOKEN' \
   -H 'Content-Type: multipart/form-data' \
   -F 'request={
-      "parsePattern":"INT:code LD:service_id \",\" DOUBLE:custom_slo_target \",\" DOUBLE:warning_threshold \",\" LD:team \",\" LD:criticality",
+      "parsePattern":"JSON:json",
+      "lookupField":"service_id"
+    }' \
+  -F 'content=@slo_config.jsonl'
+```
+
+#### For CSV:
+```bash
+curl -X 'POST' \
+  'https://your-environment.apps.dynatrace.com/platform/storage/resource-store/v1/files/tabular/lookup:test-pattern' \
+  -H 'Authorization: Bearer YOUR_PLATFORM_TOKEN' \
+  -H 'Content-Type: multipart/form-data' \
+  -F 'request={
+      "parsePattern":"LD:service_id \",\" DOUBLE:custom_slo_target \",\" DOUBLE:warning_threshold \",\" LD:team \",\" LD:criticality",
       "lookupField":"service_id",
-      "filePath":"/lookups/slo_config",
-      "displayName":"SLO Configuration",
-      "description":"Per-service SLO targets and metadata"
+      "skippedRecords":1
     }' \
   -F 'content=@slo_config.csv'
 ```
 
-### Step 3: Update or Delete (as needed)
-For updates, use the same upload command with `"overwrite": true` in the request.
-For deletion:
+#### Expected Test Response:
+```json
+{
+  "matchedRecords": 6,
+  "preview": [
+    {
+      "service_id": "SERVICE-ABC123",
+      "custom_slo_target": 99.9,
+      "warning_threshold": 99.95,
+      "team": "Platform",
+      "criticality": "High"
+    },
+    {
+      "service_id": "SERVICE-DEF456",
+      "custom_slo_target": 95.0,
+      "warning_threshold": 97.0,
+      "team": "Backend",
+      "criticality": "Medium"
+    }
+  ]
+}
+```
+
+### Step 2: Upload Data (Store in Grail)
+
+#### For JSON Lines (Recommended):
 ```bash
 curl -X 'POST' \
-  'https://<environment>.apps.dynatrace.com/platform/storage/resource-store/v1/files:delete' \
-  -H 'Authorization: Bearer <platformtoken>' \
+  'https://your-environment.apps.dynatrace.com/platform/storage/resource-store/v1/files/tabular/lookup:upload' \
+  -H 'Authorization: Bearer YOUR_PLATFORM_TOKEN' \
+  -H 'Content-Type: multipart/form-data' \
+  -F 'request={
+      "parsePattern":"JSON:json",
+      "lookupField":"service_id",
+      "filePath":"/lookups/slo_config",
+      "displayName":"SLO Configuration",
+      "description":"Per-service SLO targets and team metadata"
+    }' \
+  -F 'content=@slo_config.jsonl'
+```
+
+#### For CSV:
+```bash
+curl -X 'POST' \
+  'https://your-environment.apps.dynatrace.com/platform/storage/resource-store/v1/files/tabular/lookup:upload' \
+  -H 'Authorization: Bearer YOUR_PLATFORM_TOKEN' \
+  -H 'Content-Type: multipart/form-data' \
+  -F 'request={
+      "parsePattern":"LD:service_id \",\" DOUBLE:custom_slo_target \",\" DOUBLE:warning_threshold \",\" LD:team \",\" LD:criticality",
+      "lookupField":"service_id",
+      "filePath":"/lookups/slo_config",
+      "displayName":"SLO Configuration",
+      "description":"Per-service SLO targets and team metadata",
+      "skippedRecords":1
+    }' \
+  -F 'content=@slo_config.csv'
+```
+
+### Step 3: Update Existing File
+Add `"overwrite": true` to the request:
+```bash
+curl -X 'POST' \
+  'https://your-environment.apps.dynatrace.com/platform/storage/resource-store/v1/files/tabular/lookup:upload' \
+  -H 'Authorization: Bearer YOUR_PLATFORM_TOKEN' \
+  -H 'Content-Type: multipart/form-data' \
+  -F 'request={
+      "parsePattern":"JSON:json",
+      "lookupField":"service_id",
+      "filePath":"/lookups/slo_config",
+      "displayName":"SLO Configuration",
+      "description":"Updated per-service SLO targets - v2",
+      "overwrite": true
+    }' \
+  -F 'content=@slo_config_v2.jsonl'
+```
+
+### Step 4: Delete File (if needed)
+```bash
+curl -X 'POST' \
+  'https://your-environment.apps.dynatrace.com/platform/storage/resource-store/v1/files:delete' \
+  -H 'Authorization: Bearer YOUR_PLATFORM_TOKEN' \
+  -H 'Content-Type: application/json' \
   -d '{"filePath": "/lookups/slo_config"}'
 ```
 
 ## 4. Validate Uploaded Data
 
-List stored files:
+### List all lookup files:
 ```dql
 fetch dt.system.files 
 | filter filePath startsWith "/lookups/"
+| fields filePath, displayName, description, size, recordCount
 ```
 
-Inspect contents:
+### Inspect uploaded contents:
 ```dql
 load "/lookups/slo_config"
 ```
 
-## 5. Join Lookup Data in SLO Queries
+Expected output:
+| service_id | custom_slo_target | warning_threshold | team | criticality |
+|------------|-------------------|-------------------|------|-------------|
+| SERVICE-ABC123 | 99.9 | 99.95 | Platform | High |
+| SERVICE-DEF456 | 95.0 | 97.0 | Backend | Medium |
+| SERVICE-GHI789 | 99.0 | 99.5 | Frontend | High |
 
-### Basic Integration
+## 5. DQL Integration - Complete Examples
+
+### Basic Lookup Integration
 ```dql
-... // output from a prior module
+// Any query output...
 | lookup [ load "/lookups/slo_config" ],
     sourceField: dt.entity.service,
     lookupField: service_id
-| fieldsAdd target_pct = if(isNotNull(custom_slo_target),
-                            custom_slo_target,
-                            else: toDouble($TargetPct))
-| fieldsAdd warning_pct = if(isNotNull(warning_threshold),
-                             warning_threshold,
-                             else: toDouble($WarningPct))
+| fieldsAdd 
+    target_pct = coalesce(custom_slo_target, toDouble($TargetPct)),
+    warning_pct = coalesce(warning_threshold, toDouble($WarningPct)),
+    team = coalesce(team, "Unknown"),
+    criticality = coalesce(criticality, "Medium")
 ```
 
 ### Integration with `mod_status_table`
@@ -118,36 +219,44 @@ timeseries { total = sum(dt.service.request.count) },
 | join [
     timeseries { failed = sum(dt.service.request.count, default: 0.0) },
       by: { dt.entity.service },
-      filter: { failed == true and in(dt.entity.service, array($services)) }
+      filter: { failed == true and in(dt.entity.service, array($services)) },
+      nonempty: true
   ],
   kind: leftOuter,
   on: { dt.entity.service, timeframe, interval },
   prefix: "err."
-| fieldsAdd total = arraySum(total),
-           err_failed = arraySum(err.failed)
+| fieldsAdd 
+    total = arraySum(total),
+    err_failed = arraySum(coalesce(err.failed, 0.0))
 | summarize {
     total_period = sum(total),
     failed_period = sum(err_failed)
   }, by: { dt.entity.service }
-| fieldsAdd availability_pct = (total_period - failed_period) / total_period * 100
 | lookup [ load "/lookups/slo_config" ],
     sourceField: dt.entity.service,
     lookupField: service_id
 | fieldsAdd 
     service = entityName(dt.entity.service),
+    availability_pct = if(total_period > 0, 
+                         (total_period - failed_period) / total_period * 100,
+                         else: 100.0),
     target_pct = coalesce(custom_slo_target, toDouble($TargetPct)),
-    warning_pct = coalesce(warning_threshold, toDouble($WarningPct))
+    warning_pct = coalesce(warning_threshold, toDouble($WarningPct)),
+    team = coalesce(team, "Unknown"),
+    criticality = coalesce(criticality, "Medium")
 | fieldsAdd 
-    eb_used_pct = ((100 - availability_pct) / (100 - target_pct)) * 100,
+    eb_used_pct = if(target_pct < 100, 
+                     ((100 - availability_pct) / (100 - target_pct)) * 100,
+                     else: 0),
     eb_remaining_pct = if(eb_used_pct < 0, 100, 
                          else: if(eb_used_pct > 100, 0, 
                          else: 100 - eb_used_pct))
-| fieldsAdd state = if(availability_pct < target_pct, "Fail", 
-                      else: if(availability_pct < warning_pct, "Warn", 
-                      else: "OK"))
+| fieldsAdd state = if(availability_pct < target_pct, "❌ Fail", 
+                      else: if(availability_pct < warning_pct, "⚠️ Warn", 
+                      else: "✅ OK"))
 | fields service, team, criticality, target_pct, warning_pct, 
          availability_pct, eb_remaining_pct, state
-| sort availability_pct asc
+| sort criticality desc, availability_pct asc
 ```
 
 ### Integration with `mod_burn_rate`
@@ -163,259 +272,245 @@ timeseries { total = sum(dt.service.request.count) },
   kind: leftOuter,
   on: { dt.entity.service, timeframe, interval },
   prefix: "err."
-| fieldsAdd total = arraySum(total),
-           err_failed = arraySum(err.failed)
-| summarize { total_w = sum(total), failed_w = sum(err_failed) }, 
-  by: { dt.entity.service }
+| fieldsAdd 
+    total = arraySum(total),
+    err_failed = arraySum(err.failed)
+| summarize { 
+    total_w = sum(total), 
+    failed_w = sum(err_failed) 
+  }, by: { dt.entity.service }
 | lookup [ load "/lookups/slo_config" ],
     sourceField: dt.entity.service,
     lookupField: service_id
 | fieldsAdd 
     service = entityName(dt.entity.service),
-    target_pct = coalesce(custom_slo_target, toDouble($TargetPct))
+    target_pct = coalesce(custom_slo_target, toDouble($TargetPct)),
+    team = coalesce(team, "Unknown"),
+    criticality = coalesce(criticality, "Medium")
 | fieldsAdd error_rate = if(total_w == 0, 0.0, else: failed_w / total_w)
 | fieldsAdd burn_rate = error_rate / ((100 - target_pct) / 100.0)
-| fields service, team, criticality, target_pct, burn_rate
+| fieldsAdd burn_alert = if(criticality == "Critical" AND burn_rate > 10, "🚨 CRITICAL",
+                           else: if(burn_rate > 14.4, "⚠️ HIGH",
+                           else: if(burn_rate > 6, "⚡ MODERATE", "✅ NORMAL")))
+| fields service, team, criticality, target_pct, burn_rate, burn_alert
+| sort burn_rate desc
 ```
 
-## 6. Grail Data Visualization Examples
+## 6. Advanced Use Cases
 
-### Service Health Dashboard with Lookup Integration
-
+### Team Performance Dashboard
 ```dql
-// Query with enriched service metadata for comprehensive dashboard
-fetch events
-| filter event.type == "AVAILABILITY_EVENT"
-| fields service_id = entity.service.id,
-         availability = isNotNull(event.end) ? 0 : 1,
-         timestamp = timestamp
-| summarize 
-    total_checks = count(),
-    successful_checks = sum(availability),
-    by: {service_id, bin(timestamp, 1h)}
-| fields service_id,
-         availability_pct = (toDouble(successful_checks) / toDouble(total_checks)) * 100.0,
-         timestamp,
-         period = "1h"
-| lookup [
-    fetch dt.system.files
-    | filter path == "/lookups/slo_config"
-    | fields content
-  ], sourceField:service_id, lookupField:service_id
-| fields service_id,
-         availability_pct,
-         timestamp,
-         period,
-         slo_target = coalesce(lookup.custom_slo_target, 99.0),
-         warning_threshold = coalesce(lookup.warning_threshold, 99.5),
-         team = coalesce(lookup.team, "Unknown"),
-         criticality = coalesce(lookup.criticality, "Medium"),
-         slo_status = if(availability_pct >= lookup.custom_slo_target, "Met", 
-                         if(availability_pct >= lookup.warning_threshold, "Warning", "Failed")),
-         health_score = availability_pct / lookup.custom_slo_target * 100.0
-| sort timestamp desc
-```
-
-### Team Performance Overview
-
-```dql
-// Aggregate availability by team using lookup data
-fetch events
-| filter event.type == "AVAILABILITY_EVENT"
-| fields service_id = entity.service.id,
-         availability = isNotNull(event.end) ? 0 : 1
-| summarize 
-    total_checks = count(),
-    successful_checks = sum(availability),
-    by: {service_id}
-| fields service_id,
-         availability_pct = (toDouble(successful_checks) / toDouble(total_checks)) * 100.0
-| lookup [
-    fetch dt.system.files
-    | filter path == "/lookups/slo_config"
-    | fields content
-  ], sourceField:service_id, lookupField:service_id
-| fields team = coalesce(lookup.team, "Unknown"),
-         criticality = coalesce(lookup.criticality, "Medium"),
-         service_id,
-         availability_pct,
-         slo_target = coalesce(lookup.custom_slo_target, 99.0),
-         slo_met = availability_pct >= lookup.custom_slo_target
-| summarize 
-    services_count = countDistinct(service_id),
+timeseries { total = sum(dt.service.request.count) },
+  by: { dt.entity.service }
+| join [
+    timeseries { failed = sum(dt.service.request.count, default: 0.0) },
+      by: { dt.entity.service },
+      filter: { failed == true }
+  ],
+  kind: leftOuter,
+  on: { dt.entity.service, timeframe, interval },
+  prefix: "err."
+| fieldsAdd 
+    total_sum = arraySum(total),
+    failed_sum = arraySum(coalesce(err.failed, 0.0))
+| summarize {
+    total_requests = sum(total_sum),
+    failed_requests = sum(failed_sum)
+  }, by: { dt.entity.service }
+| fieldsAdd availability_pct = if(total_requests > 0,
+                                  (total_requests - failed_requests) / total_requests * 100,
+                                  else: 100.0)
+| lookup [ load "/lookups/slo_config" ],
+    sourceField: dt.entity.service,
+    lookupField: service_id
+| fieldsAdd 
+    team = coalesce(team, "Unknown"),
+    criticality = coalesce(criticality, "Medium"),
+    target_pct = coalesce(custom_slo_target, 99.0),
+    slo_met = availability_pct >= target_pct
+| summarize {
+    services_count = count(),
     avg_availability = avg(availability_pct),
-    services_meeting_slo = countDistinct(if(slo_met, service_id)),
-    high_criticality_services = countDistinct(if(criticality == "High", service_id)),
-    by: {team}
-| fields team,
-         services_count,
-         avg_availability,
-         slo_compliance_rate = (toDouble(services_meeting_slo) / toDouble(services_count)) * 100.0,
-         high_criticality_services
+    services_meeting_slo = countIf(slo_met == true),
+    critical_services = countIf(criticality == "Critical" OR criticality == "High")
+  }, by: { team }
+| fieldsAdd slo_compliance_rate = if(services_count > 0,
+                                     (toDouble(services_meeting_slo) / toDouble(services_count)) * 100.0,
+                                     else: 0.0)
+| fields team, services_count, avg_availability, slo_compliance_rate, critical_services
 | sort slo_compliance_rate desc
 ```
 
-### Criticality-Based Alerting Query
-
+### Criticality-Based Alerting
 ```dql
-// Alert conditions based on service criticality from lookup data
-fetch events
-| filter event.type == "AVAILABILITY_EVENT"
-| filter timestamp >= now() - 1h
-| fields service_id = entity.service.id,
-         availability = isNotNull(event.end) ? 0 : 1,
-         timestamp
-| summarize 
-    total_checks = count(),
-    successful_checks = sum(availability),
-    by: {service_id}
-| fields service_id,
-         current_availability = (toDouble(successful_checks) / toDouble(total_checks)) * 100.0
-| lookup [
-    fetch dt.system.files
-    | filter path == "/lookups/slo_config"
-    | fields content
-  ], sourceField:service_id, lookupField:service_id
-| fields service_id,
-         current_availability,
-         slo_target = coalesce(lookup.custom_slo_target, 99.0),
-         warning_threshold = coalesce(lookup.warning_threshold, 99.5),
-         team = coalesce(lookup.team, "Unknown"),
-         criticality = coalesce(lookup.criticality, "Medium")
-| fields service_id,
-         team,
-         criticality,
-         current_availability,
-         slo_target,
-         warning_threshold,
-         alert_level = if(current_availability < slo_target,
-                         if(criticality == "High", "CRITICAL",
-                            if(criticality == "Medium", "WARNING", "INFO")),
-                         "OK"),
-         deviation = slo_target - current_availability
+timeseries { total = sum(dt.service.request.count) },
+  by: { dt.entity.service },
+  from: now() - 1h
+| join [
+    timeseries { failed = sum(dt.service.request.count, default: 0.0) },
+      by: { dt.entity.service },
+      filter: { failed == true },
+      from: now() - 1h
+  ],
+  kind: leftOuter,
+  on: { dt.entity.service, timeframe, interval },
+  prefix: "err."
+| fieldsAdd 
+    total_1h = arraySum(total),
+    failed_1h = arraySum(coalesce(err.failed, 0.0))
+| summarize {
+    total = sum(total_1h),
+    failed = sum(failed_1h)
+  }, by: { dt.entity.service }
+| fieldsAdd current_availability = if(total > 0,
+                                      (total - failed) / total * 100.0,
+                                      else: 100.0)
+| lookup [ load "/lookups/slo_config" ],
+    sourceField: dt.entity.service,
+    lookupField: service_id
+| fieldsAdd 
+    service = entityName(dt.entity.service),
+    target_pct = coalesce(custom_slo_target, 99.0),
+    team = coalesce(team, "Unknown"),
+    criticality = coalesce(criticality, "Medium")
+| fieldsAdd 
+    deviation = target_pct - current_availability,
+    alert_level = if(current_availability < target_pct,
+                     if(criticality == "Critical", "PAGE",
+                        else: if(criticality == "High", "ALERT",
+                        else: if(criticality == "Medium", "WARN", "INFO"))),
+                     else: "OK")
 | filter alert_level != "OK"
-| sort criticality desc, deviation desc
+| fields service, team, criticality, current_availability, target_pct, deviation, alert_level
+| sort alert_level asc, deviation desc
 ```
 
-### Service Dependency Impact Analysis
+## 7. Working with Complex JSON Structures
 
+### Nested JSON Example (`slo_config_nested.jsonl`):
+```json
+{"service_id":"SERVICE-ABC123","slo":{"target":99.9,"warning":99.95},"metadata":{"team":"Platform","criticality":"High","owner":"john.doe@company.com","cost_center":"CC-100"}}
+{"service_id":"SERVICE-DEF456","slo":{"target":95.0,"warning":97.0},"metadata":{"team":"Backend","criticality":"Medium","owner":"jane.smith@company.com","cost_center":"CC-200"}}
+```
+
+### Upload Nested JSON:
+```bash
+curl -X 'POST' \
+  'https://your-environment.apps.dynatrace.com/platform/storage/resource-store/v1/files/tabular/lookup:upload' \
+  -H 'Authorization: Bearer YOUR_PLATFORM_TOKEN' \
+  -H 'Content-Type: multipart/form-data' \
+  -F 'request={
+      "parsePattern":"JSON:json",
+      "lookupField":"service_id",
+      "filePath":"/lookups/slo_config_nested",
+      "displayName":"Nested SLO Configuration",
+      "description":"Complex JSON structure with nested SLO and metadata"
+    }' \
+  -F 'content=@slo_config_nested.jsonl'
+```
+
+### Using Nested Fields in DQL:
 ```dql
-// Analyze impact of service issues considering criticality and team ownership
-fetch events
-| filter event.type == "AVAILABILITY_EVENT"
-| filter timestamp >= now() - 24h
-| fields service_id = entity.service.id,
-         availability = isNotNull(event.end) ? 0 : 1,
-         timestamp,
-         duration = if(isNotNull(event.end), event.end - event.start, now() - event.start)
-| summarize 
-    total_checks = count(),
-    successful_checks = sum(availability),
-    total_downtime_minutes = sum(if(availability == 0, duration/1000000000/60, 0)),
-    incident_count = count(if(availability == 0, 1)),
-    by: {service_id}
-| fields service_id,
-         availability_pct = (toDouble(successful_checks) / toDouble(total_checks)) * 100.0,
-         total_downtime_minutes,
-         incident_count,
-         mttr_minutes = if(incident_count > 0, total_downtime_minutes / incident_count, 0)
-| lookup [
-    fetch dt.system.files
-    | filter path == "/lookups/slo_config"
-    | fields content
-  ], sourceField:service_id, lookupField:service_id
-| fields service_id,
-         team = coalesce(lookup.team, "Unknown"),
-         criticality = coalesce(lookup.criticality, "Medium"),
-         availability_pct,
-         total_downtime_minutes,
-         incident_count,
-         mttr_minutes,
-         slo_target = coalesce(lookup.custom_slo_target, 99.0),
-         impact_score = if(criticality == "High", total_downtime_minutes * 3,
-                          if(criticality == "Medium", total_downtime_minutes * 2, 
-                             total_downtime_minutes))
-| sort impact_score desc
+// Access nested fields after lookup
+| lookup [ load "/lookups/slo_config_nested" ],
+    sourceField: dt.entity.service,
+    lookupField: service_id
+| fieldsAdd 
+    target_pct = coalesce(json.slo.target, toDouble($TargetPct)),
+    warning_pct = coalesce(json.slo.warning, toDouble($WarningPct)),
+    team = coalesce(json.metadata.team, "Unknown"),
+    owner = coalesce(json.metadata.owner, "unassigned"),
+    cost_center = coalesce(json.metadata.cost_center, "N/A")
 ```
 
-### Real-Time SLO Burn Rate Monitor
+## 8. Best Practices
 
-```dql
-// Monitor SLO burn rate with different thresholds per service
-timeseries 
-  successful_requests = sum(if(http.response_status_code < 400, 1, 0)),
-  total_requests = count(),
-  by: {service.name}, interval:5m
-| fields 
-    service_id = service.name,
-    timestamp,
-    availability = if(total_requests > 0, 
-                     toDouble(successful_requests) / toDouble(total_requests) * 100.0, 
-                     100.0)
-| lookup [
-    fetch dt.system.files
-    | filter path == "/lookups/slo_config"
-    | fields content
-  ], sourceField:service_id, lookupField:service_id
-| fields service_id,
-         timestamp,
-         availability,
-         slo_target = coalesce(lookup.custom_slo_target, 99.0),
-         team = coalesce(lookup.team, "Unknown"),
-         criticality = coalesce(lookup.criticality, "Medium")
-| fields service_id,
-         timestamp,
-         team,
-         criticality,
-         availability,
-         slo_target,
-         error_budget_consumed = max(0, slo_target - availability),
-         burn_rate = if(slo_target > 0, 
-                       error_budget_consumed / (100.0 - slo_target) * 100.0, 
-                       0),
-         burn_rate_status = if(burn_rate > 50, "FAST_BURN",
-                              if(burn_rate > 20, "MODERATE_BURN",
-                                 if(burn_rate > 5, "SLOW_BURN", "HEALTHY")))
-| filter burn_rate_status != "HEALTHY"
-| sort timestamp desc, burn_rate desc
-```
+### File Format Selection
 
-## 7. Best Practices and Troubleshooting
+| Criteria | JSON Lines | CSV |
+|----------|------------|-----|
+| **Parse Pattern Complexity** | Simple: `JSON:json` | Complex: field-by-field with delimiters |
+| **Type Preservation** | ✅ Automatic | ❌ Requires type specification |
+| **Null Handling** | ✅ Native support | ❌ Empty strings |
+| **Nested Data** | ✅ Supported | ❌ Flat only |
+| **Human Readability** | ✅ Self-documenting | ⚠️ Requires header reference |
+| **Excel Compatibility** | ❌ Requires conversion | ✅ Direct open/edit |
 
-### Best Practices
-- **File Organization**: Use logical structures like `/lookups/team/purpose/filename`
-- **Size Limits**: Keep files under 100 MB
-- **Deduplication**: Use `lookupField` parameter to ensure unique records
-- **Permissions**: Implement least-privilege access with path restrictions
-- **Documentation**: Maintain ownership and purpose documentation for each lookup table
-- **Version Control**: Consider including version numbers in filenames if needed
+**Recommendation**: Use JSON Lines unless you need direct Excel editing capability.
+
+### Organization Guidelines
+- **File Structure**: `/lookups/{team}/{purpose}/{version}`
+  - Example: `/lookups/platform/slo_config/v2`
+- **Naming Convention**: Use descriptive, versioned names
+- **Size Management**: Keep files under 100 MB
+- **Deduplication**: Use `lookupField` to ensure unique records
+- **Documentation**: Include description in upload request
+
+### Security Best Practices
+- **Least Privilege**: Grant minimum required permissions
+- **Path Restrictions**: Limit access to specific `/lookups/` subdirectories
+- **Audit Trail**: Document who owns and maintains each lookup table
+- **Sensitive Data**: Avoid storing secrets or PII in lookup tables
+
+## 9. Troubleshooting Guide
 
 ### Common Issues and Solutions
 
-| Issue | Solution |
-|-------|----------|
-| Pattern matching failures | Test DPL pattern with test endpoint first; check for header lines |
-| Permission denied | Verify `storage:files:*` permissions include the specific path |
-| File not found | Use `fetch dt.system.files` to verify exact path and case sensitivity |
-| Upload failures | Ensure file < 100 MB, path starts with `/lookups/`, use `overwrite` for updates |
-| Null values after join | Use `coalesce()` to handle services without lookup entries |
+| Issue | Symptoms | Solution |
+|-------|----------|----------|
+| **Pattern Match Failure** | Test returns 0 matched records | • Verify JSON is valid (one object per line)<br>• Check CSV delimiter escaping<br>• Use `skippedRecords` for CSV headers |
+| **Permission Denied** | 403 error on API calls | • Verify OAuth token has `storage:files:*` permissions<br>• Check path starts with `/lookups/` |
+| **File Not Found** | Load returns empty | • Use `fetch dt.system.files` to verify exact path<br>• Check case sensitivity |
+| **Upload Failure** | 400 error on upload | • Ensure file < 100 MB<br>• Verify `filePath` format<br>• Use `overwrite: true` for updates |
+| **Null After Join** | Missing enrichment data | • Use `coalesce()` for fallback values<br>• Verify `lookupField` matches data |
+| **Type Mismatch** | Calculation errors | • JSON preserves types automatically<br>• For CSV, specify types in parse pattern |
 
-## 7. Dashboard Variable Configuration
+### Validation Commands
 
-Add these dashboard variables to support fallback values:
+```bash
+# Validate JSON syntax locally
+jq . slo_config.jsonl
 
-| Variable | Type | Default | Purpose |
-|----------|------|---------|---------|
-| `Services` | DQL, multi-select | — | Service selection |
-| `TargetPct` | Free text/List | `98` | Fallback SLO target |
-| `WarningPct` | Free text/List | `99` | Fallback warning threshold |
+# Count records
+wc -l slo_config.jsonl
 
-## 8. Complete Integration Example
+# Check file size
+ls -lh slo_config.jsonl
 
-Here's how all pieces work together in a comprehensive dashboard query:
+# Test first few records
+head -3 slo_config.jsonl | jq .
+```
+
+## 10. Dashboard Variable Configuration
+
+Configure these dashboard variables for fallback values:
+
+| Variable | Type | Default | Purpose | Example Query |
+|----------|------|---------|---------|---------------|
+| `Services` | DQL, multi-select | — | Service selection | See below |
+| `TargetPct` | Free text/Double | `99.0` | Fallback SLO target | — |
+| `WarningPct` | Free text/Double | `99.5` | Fallback warning threshold | — |
+| `Team` | DQL, single-select | `All` | Filter by team | See below |
+
+### Services Variable Query:
+```dql
+fetch dt.entity.service
+| fields id = dt.entity.service, name = entityName(dt.entity.service)
+| sort name asc
+```
+
+### Team Variable Query (from lookup):
+```dql
+load "/lookups/slo_config"
+| fields team
+| distinct team
+| sort team asc
+```
+
+## 11. Complete Dashboard Integration Example
 
 ```dql
-// mod_status_table with lookup enrichment
+// Full integration with all features
 timeseries { total = sum(dt.service.request.count) },
   by: { dt.entity.service },
   filter: { in(dt.entity.service, array($Services)) }
@@ -438,12 +533,13 @@ timeseries { total = sum(dt.service.request.count) },
 | lookup [ load "/lookups/slo_config" ],
     sourceField: dt.entity.service,
     lookupField: service_id
+// Apply team filter if not "All"
+| filter $Team == "All" OR team == $Team
 | fieldsAdd 
     service = entityName(dt.entity.service),
     availability_pct = if(total_period > 0, 
                          (total_period - failed_period) / total_period * 100,
                          else: 100.0),
-    // Use lookup values if available, otherwise fall back to dashboard variables
     target_pct = coalesce(custom_slo_target, toDouble($TargetPct)),
     warning_pct = coalesce(warning_threshold, toDouble($WarningPct)),
     team = coalesce(team, "Unknown"),
@@ -463,13 +559,32 @@ timeseries { total = sum(dt.service.request.count) },
 | sort criticality desc, availability_pct asc
 ```
 
-## 9. Next Steps
+## 12. Migration and Deployment Steps
 
-1. **Create and upload** the initial lookup file with your service configurations
-2. **Test integration** with a single module first (recommend starting with `mod_status_table`)
-3. **Update all modules** to support optional lookup enrichment
-4. **Add filtering capabilities** based on team or criticality from lookup data
-5. **Consider automation** for updating lookup files via CI/CD pipeline
-6. **Document** the lookup schema for team members maintaining configurations
+1. **Prepare Data File**
+   - Convert existing configurations to JSON Lines format
+   - Validate JSON syntax with `jq` or online validators
 
-This plan enables scalable per-service configuration for availability dashboards using Dynatrace Grail lookup tables, providing flexibility while maintaining dashboard simplicity.
+2. **Test in Non-Production**
+   - Upload to test environment first
+   - Verify all lookups resolve correctly
+   - Test dashboard queries with sample data
+
+3. **Deploy to Production**
+   - Upload lookup file using API with proper authentication
+   - Update dashboard variables to include fallback values
+   - Test each module integration separately
+
+4. **Establish Maintenance Process**
+   - Document update procedures
+   - Set up CI/CD for automated updates
+   - Create version control for lookup files
+
+5. **Monitor and Iterate**
+   - Track lookup usage in dashboards
+   - Gather feedback from teams
+   - Optimize query performance as needed
+
+## Summary
+
+This plan enables scalable per-service SLO configuration using Dynatrace Grail lookup tables. JSON Lines format is recommended for its simplicity, type safety, and native support for complex data structures. The lookup integration provides flexibility for team-specific thresholds while maintaining dashboard simplicity through fallback values.
