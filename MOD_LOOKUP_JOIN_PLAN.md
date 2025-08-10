@@ -27,11 +27,19 @@ SERVICE-GHI789,99.0,99.5,Frontend,High
 SERVICE-JKL012,98.0,99.0,Data,Low
 ```
 
+> The CSV example requires a parse pattern expressed in Dynatrace Pattern Language (DPL). Matchers such as `LD` and `DOUBLE` map the comma-separated fields, and `EOL` marks the end of each record. For complex formats, design and test patterns in [DPL Architect](https://docs.dynatrace.com/docs/discover-dynatrace/references/dynatrace-pattern-language/dpl-architect) before uploading.
+
 ### File Path Requirements
 - Must begin with `/lookups/` prefix
 - Can only contain: alphanumeric characters (`a-zA-Z0-9`), dash (`-`), underscore (`_`), period (`.`), forward slash (`/`)
 - Must start with `/` and end with alphanumeric character
 - Example: `/lookups/slo_config` or `/lookups/team/slo_config_v2`
+
+### File Limits and Best Practices
+- Maximum 100 lookup files per environment (preview phase)
+- Individual files up to 100 MB and 128 columns
+- Organize files with logical prefixes like `/lookups/team/purpose/filename`
+- Use the `lookupField` parameter to deduplicate records and keep files lean
 
 ## 2. Configure Access Permissions
 
@@ -96,7 +104,14 @@ ALLOW storage:files:delete WHERE storage:file-path startsWith "/lookups/";
    - Ensure service user belongs to groups with appropriate permissions
    - Follow principle of least privilege for scope assignments
 
+6. **OAuth Security Best Practices**:
+   - Never commit client secrets to version control or logs
+   - Store credentials in environment variables or secret managers and rotate them regularly
+   - Grant only necessary scopes and audit client permissions periodically
+
 ## 3. Upload Lookup Files - Complete Workflow
+
+The Resource Store API relies on Dynatrace Pattern Language (DPL) for parsing uploaded data. Patterns are evaluated left to right and can be validated interactively with DPL Architect before submission.
 
 ### Step 1: Test Parsing (Validate Without Storing)
 
@@ -120,7 +135,7 @@ curl -X 'POST' \
   -H 'Authorization: Bearer YOUR_PLATFORM_TOKEN' \
   -H 'Content-Type: multipart/form-data' \
   -F 'request={
-      "parsePattern":"LD:service_id \",\" DOUBLE:custom_slo_target \",\" DOUBLE:warning_threshold \",\" LD:team \",\" LD:criticality",
+      "parsePattern":"LD:service_id \",\" DOUBLE:custom_slo_target \",\" DOUBLE:warning_threshold \",\" LD:team \",\" LD:criticality EOL",
       "lookupField":"service_id",
       "skippedRecords":1
     }' \
@@ -175,7 +190,7 @@ curl -X 'POST' \
   -H 'Authorization: Bearer YOUR_PLATFORM_TOKEN' \
   -H 'Content-Type: multipart/form-data' \
   -F 'request={
-      "parsePattern":"LD:service_id \",\" DOUBLE:custom_slo_target \",\" DOUBLE:warning_threshold \",\" LD:team \",\" LD:criticality",
+      "parsePattern":"LD:service_id \",\" DOUBLE:custom_slo_target \",\" DOUBLE:warning_threshold \",\" LD:team \",\" LD:criticality EOL",
       "lookupField":"service_id",
       "filePath":"/lookups/slo_config",
       "displayName":"SLO Configuration",
