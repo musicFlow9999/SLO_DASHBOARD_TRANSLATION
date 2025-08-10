@@ -158,3 +158,51 @@ Use a named `else` parameter when including an else branch:
 
 Naming the `else` parameter follows the conditional function syntax and avoids the positional parameter error.
 
+## Error: availability_pct field not recognized as numeric
+
+### Query
+
+```dql
+timeseries { total = sum(dt.service.request.count) },
+  by: { dt.entity.service },
+  filter: { in(dt.entity.service, array($services)) }
+| join [
+    timeseries { failed = sum(dt.service.request.count, default: 0.0) },
+      by: { dt.entity.service },
+      filter: { failed == true and in(dt.entity.service, array($services)) }
+  ],
+  kind: leftOuter,
+  on: { dt.entity.service, timeframe, interval },
+  prefix: "err."
+| fieldsAdd availability_pct = (total[] - err.failed[]) / total[] * 100
+| fieldsAdd service = entityName(dt.entity.service)
+| fields service, availability_pct, timeframe, interval
+```
+
+### Error output
+
+```
+availability_pct is an unsuitable field for time series values
+```
+
+## Solution
+
+Use `nonempty: true` to emit zero-value series for failed requests and `coalesce` to replace `null` with `0.0`, ensuring `availability_pct` remains numeric:
+
+```dql
+timeseries { total = sum(dt.service.request.count) },
+  by: { dt.entity.service },
+  filter: { in(dt.entity.service, array($services)) }
+| join [
+    timeseries { failed = sum(dt.service.request.count, default: 0.0) },
+      by: { dt.entity.service },
+      filter: { failed == true and in(dt.entity.service, array($services)) },
+      nonempty: true
+  ],
+  kind: leftOuter,
+  on: { dt.entity.service, timeframe, interval },
+  prefix: "err."
+| fieldsAdd availability_pct = (total[] - coalesce(err.failed[], 0.0)) / total[] * 100
+| fieldsAdd service = entityName(dt.entity.service)
+| fieldsKeep dt.entity.service, service, availability_pct, total, err.failed, timeframe, interval
+```
